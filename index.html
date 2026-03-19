@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Viyu</title>
+
+<style>
+body{margin:0;font-family:Arial;background:#0f1f1c;color:white;}
+.header{background:#111b21;padding:10px;}
+.chat{height:60vh;overflow-y:auto;padding:10px;}
+.msg{padding:10px;border-radius:18px;margin:6px;max-width:70%;}
+.left{background:#202c33;}
+.right{background:#005c4b;margin-left:auto;}
+.time{font-size:10px;opacity:0.7;margin-top:4px;}
+.inputArea{position:fixed;bottom:0;width:100%;background:#111b21;display:flex;padding:6px;}
+.inputArea input{flex:1;padding:8px;border-radius:20px;border:none;background:#202c33;color:white;}
+.inputArea button{border:none;background:#25d366;padding:8px;margin-left:4px;border-radius:18px;}
+.replyPreview{position:fixed;bottom:60px;width:100%;background:#1f2c34;padding:6px;display:none;}
+.typing{font-size:12px;color:#aaa;padding-left:10px;}
+img{max-width:200px;border-radius:10px;}
+audio{width:200px;}
+</style>
+
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-storage.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+</head>
+
+<body>
+
+<div class="header">Viyu</div>
+
+<div id="typing" class="typing"></div>
+<div id="chat" class="chat"></div>
+<div id="replyPreview" class="replyPreview"></div>
+
+<div class="inputArea">
+<input type="file" id="fileInput" hidden>
+<button onclick="pickFile()">📷</button>
+<button id="recordBtn">🎤</button>
+<button onclick="addEmoji()">😊</button>
+<input type="text" id="msg" placeholder="Type message">
+<button onclick="send()">Send</button>
+</div>
+
+<script>
+
+// ROOM SYSTEM
+let room=new URLSearchParams(location.search).get("room")||"public";
+let baseRef="rooms/"+room+"/messages";
+
+// FIREBASE CONFIG (same as yours)
+const firebaseConfig={
+apiKey:"AIzaSyCS0Sb6O5KONqoxz_7aNCAmlP8an5vkz_I",
+authDomain:"vuchat-31e2a.firebaseapp.com",
+databaseURL:"https://vuchat-31e2a-default-rtdb.asia-southeast1.firebasedatabase.app",
+projectId:"vuchat-31e2a",
+storageBucket:"vuchat-31e2a.appspot.com",
+messagingSenderId:"196757163616",
+appId:"1:196757163616:web:edcb7ee62c2fb7e6517d05"
+};
+
+firebase.initializeApp(firebaseConfig);
+var db=firebase.database();
+var storage=firebase.storage();
+
+// USER
+let user=localStorage.getItem("user")||("user"+Math.random());
+localStorage.setItem("user",user);
+
+let chat=document.getElementById("chat");
+let input=document.getElementById("msg");
+let typingDiv=document.getElementById("typing");
+let replyPreview=document.getElementById("replyPreview");
+
+let reply=null;
+
+// ENCRYPTION
+const key="viyu_secret";
+function enc(t){return CryptoJS.AES.encrypt(t,key).toString();}
+function dec(t){return CryptoJS.AES.decrypt(t,key).toString(CryptoJS.enc.Utf8);}
+function time(){let d=new Date();return d.getHours()+":"+("0"+d.getMinutes()).slice(-2);}
+
+// SEND TEXT
+function send(){
+let t=input.value.trim();
+if(!t) return;
+
+db.ref(baseRef).push({
+type:"text",
+msg:enc(t),
+reply:reply,
+sender:user,
+time:time(),
+seen:false
+});
+
+input.value="";
+reply=null;
+replyPreview.style.display="none";
+}
+
+// TYPING
+input.oninput=()=>{
+db.ref("rooms/"+room+"/typing").set({user,typing:true});
+setTimeout(()=>db.ref("rooms/"+room+"/typing").set({typing:false}),1000);
+};
+
+db.ref("rooms/"+room+"/typing").on("value",d=>{
+let t=d.val();
+typingDiv.innerText=(t && t.typing && t.user!==user)?"typing...":"";
+});
+
+// RECEIVE
+db.ref(baseRef).on("child_added",data=>{
+let m=data.val();
+let id=data.key;
+
+let div=document.createElement("div");
+div.className="msg "+(m.sender===user?"right":"left");
+
+if(m.sender!==user){
+db.ref(baseRef+"/"+id).update({seen:true});
+}
+
+let ticks=(m.sender===user)?(m.seen?" ✓✓":" ✓"):"";
+
+if(m.deleted){
+div.innerHTML="<i>This message was deleted</i>";
+}
+
+else if(m.type==="text"){
+let txt=dec(m.msg);
+div.innerHTML=
+(m.reply?"<div style='opacity:0.6'>"+m.reply+"</div>":"")+
+txt+
+"<div class='time'>"+m.time+ticks+"</div>";
+
+div.onclick=()=>{
+reply=txt;
+replyPreview.innerText="Replying: "+txt;
+replyPreview.style.display="block";
+};
+}
+
+else if(m.type==="image"){
+div.innerHTML="<img src='"+m.url+"'><div class='time'>"+m.time+"</div>";
+}
+
+else if(m.type==="voice"){
+div.innerHTML="<audio controls src='"+m.url+"'></audio>";
+}
+
+// DELETE
+div.oncontextmenu=e=>{
+e.preventDefault();
+if(confirm("Delete message?")){
+db.ref(baseRef+"/"+id).update({deleted:true});
+}
+};
+
+chat.appendChild(div);
+chat.scrollTop=chat.scrollHeight;
+});
+
+// MEDIA
+function pickFile(){fileInput.click();}
+fileInput.onchange=e=>{
+let f=e.target.files[0];
+let ref=storage.ref("media/"+Date.now());
+ref.put(f).then(()=>ref.getDownloadURL().then(url=>{
+db.ref(baseRef).push({type:"image",url,sender:user,time:time()});
+}));
+};
+
+// EMOJI
+function addEmoji(){input.value+="😊";}
+
+// 🎤 HOLD TO RECORD (FINAL FIX)
+let recorder, chunks=[], stream, isRecording=false;
+let btn=document.getElementById("recordBtn");
+
+btn.addEventListener("touchstart",startRec);
+btn.addEventListener("touchend",stopRec);
+
+async function startRec(e){
+e.preventDefault();
+if(isRecording) return;
+
+try{
+stream=await navigator.mediaDevices.getUserMedia({audio:true});
+recorder=new MediaRecorder(stream);
+chunks=[];
+recorder.ondataavailable=e=>{
+if(e.data.size>0) chunks.push(e.data);
+};
+recorder.start();
+isRecording=true;
+btn.innerText="🔴";
+}catch{
+alert("Mic permission ya HTTPS issue ❌");
+}
+}
+
+function stopRec(e){
+e.preventDefault();
+if(!isRecording) return;
+
+recorder.stop();
+isRecording=false;
+btn.innerText="🎤";
+
+recorder.onstop=async()=>{
+let blob=new Blob(chunks,{type:"audio/webm"});
+
+// stop mic
+stream.getTracks().forEach(track=>track.stop());
+
+let ref=storage.ref("voice/"+Date.now()+".webm");
+await ref.put(blob);
+let url=await ref.getDownloadURL();
+
+db.ref(baseRef).push({
+type:"voice",
+url:url,
+sender:user,
+time:time()
+});
+};
+}
+
+</script>
+
+</body>
+</html>
